@@ -22,6 +22,5 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/images/genio-sabido.png
-    - assets/images/genio-pensando.png
+    
     - assets/data/professores.json

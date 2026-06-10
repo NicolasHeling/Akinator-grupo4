@@ -7,8 +7,13 @@ import '../models/question.dart';
 class GameController extends ChangeNotifier {
   int currentQuestionIndex = 0;
   bool isGameOver = false;
-  List<Professor> professors = [];
 
+  List<Professor> allProfessors = [];
+  List<Professor> activeProfessors =
+      []; // Professores que ainda são possibilidades
+  List<Question> remainingQuestions = []; // Perguntas na fila
+
+  // Lista original mantida intacta para controle da barra de progresso na UI
   final List<Question> questions = [
     Question(id: 1, text: "O(a) professor(a) é do gênero feminino?"),
     Question(id: 2, text: "O(a) professor(a) usa óculos habitualmente?"),
@@ -80,45 +85,122 @@ class GameController extends ChangeNotifier {
   ];
 
   GameController() {
+    remainingQuestions = List.from(questions);
+    remainingQuestions.shuffle();
     _loadProfessorsFromJson();
-    questions.shuffle();
   }
 
   Future<void> _loadProfessorsFromJson() async {
     final response = await rootBundle.loadString(
       'assets/data/professores.json',
     );
-    professors = (json.decode(response) as List)
+    allProfessors = (json.decode(response) as List)
         .map((j) => Professor.fromJson(j))
         .toList();
+    activeProfessors = List.from(allProfessors);
     notifyListeners();
   }
 
-  Question get currentQuestion => questions[currentQuestionIndex];
+  Question get currentQuestion => remainingQuestions.isNotEmpty
+      ? remainingQuestions.first
+      : questions.first;
 
   Professor get guessedProfessor {
-    final sorted = List<Professor>.from(professors)
+    // Se a lista esvaziar (por respostas contraditórias do usuário), usa a lista geral como backup
+    List<Professor> sourceList = activeProfessors.isNotEmpty
+        ? activeProfessors
+        : allProfessors;
+
+    final sorted = List<Professor>.from(sourceList)
       ..sort((a, b) => b.currentScore.compareTo(a.currentScore));
     return sorted.first;
   }
 
   void answerCurrentQuestion(AnswerOption answer) {
-    for (var p in professors) {
-      p.currentScore += (p.traits[currentQuestion.id] ?? 0.0) * answer.value;
+    // Restabelecido o tipo forte AnswerOption
+    double answerValue = answer.value.toDouble();
+    int currentQId = currentQuestion.id;
+
+    // 1. Atualiza os pontos de quem ainda está no jogo (lista filtrada)
+    for (var p in activeProfessors) {
+      double traitVal =
+          (p.traits[currentQId.toString()] ?? p.traits[currentQId] ?? 0.0)
+              .toDouble();
+      p.currentScore += traitVal * answerValue;
     }
-    if (currentQuestionIndex < questions.length - 1) {
-      currentQuestionIndex++;
-    } else {
+
+    // Atualiza também o backup em caso de contradições no final
+    for (var p in allProfessors) {
+      if (!activeProfessors.contains(p)) {
+        double traitVal =
+            (p.traits[currentQId.toString()] ?? p.traits[currentQId] ?? 0.0)
+                .toDouble();
+        p.currentScore += traitVal * answerValue;
+      }
+    }
+
+    // 2. Filtra os professores eliminados moldando o caminho (Árvore de Decisão)
+    if (answerValue >= 0.8) {
+      // Resposta "Sim" ou "Provavelmente sim"
+      activeProfessors.removeWhere(
+        (p) =>
+            (p.traits[currentQId.toString()] ?? p.traits[currentQId] ?? 0.0) ==
+            -1.0,
+      );
+    } else if (answerValue <= -0.8) {
+      // Resposta "Não" ou "Provavelmente não"
+      activeProfessors.removeWhere(
+        (p) =>
+            (p.traits[currentQId.toString()] ?? p.traits[currentQId] ?? 0.0) ==
+            1.0,
+      );
+    }
+
+    // 3. Remove a pergunta atual da fila
+    if (remainingQuestions.isNotEmpty) {
+      remainingQuestions.removeAt(0);
+    }
+    currentQuestionIndex++;
+
+    // 4. Limpeza inteligente de perguntas irrelevantes
+    if (activeProfessors.isNotEmpty) {
+      remainingQuestions.removeWhere((q) {
+        double firstTrait =
+            (activeProfessors.first.traits[q.id.toString()] ??
+                    activeProfessors.first.traits[q.id] ??
+                    0.0)
+                .toDouble();
+        bool allSame = activeProfessors.every(
+          (p) =>
+              (p.traits[q.id.toString()] ?? p.traits[q.id] ?? 0.0).toDouble() ==
+              firstTrait,
+        );
+        return allSame;
+      });
+    }
+
+    // 5. Verifica as condições de fim de jogo
+    if (activeProfessors.length <= 1 || remainingQuestions.isEmpty) {
       isGameOver = true;
     }
+
     notifyListeners();
   }
 
   void resetGame() {
     currentQuestionIndex = 0;
     isGameOver = false;
-    for (var p in professors) p.currentScore = 0.0;
-    questions.shuffle();
+
+    // Zera pontuações
+    for (var p in allProfessors) {
+      p.currentScore = 0.0;
+    }
+
+    // Reinicia o grupo e recalcula as perguntas
+    activeProfessors = List.from(allProfessors);
+    remainingQuestions = List.from(questions);
+    remainingQuestions.shuffle();
+
     notifyListeners();
   }
 }
